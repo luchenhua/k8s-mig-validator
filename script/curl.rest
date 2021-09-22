@@ -1,0 +1,46 @@
+@hostname = localhost
+@port = 9995
+@host = {{hostname}}:{{port}}
+@basePath = /validator
+@baseURL = {{host}}{{basePath}}
+@contentType = application/json;charset=utf-8
+
+### test alive
+GET http://{{baseURL}}/ping
+Content-Type: {{contentType}}
+
+###
+GET  http://{{baseURL}}/source/config
+Content-Type: {{contentType}}
+
+###
+GET  http://{{baseURL}}/source/dialector
+Content-Type: {{contentType}}
+
+###
+GET  http://{{baseURL}}/source/status
+Content-Type: {{contentType}}
+
+###
+GET  http://{{baseURL}}/source/tables
+Content-Type: {{contentType}}
+
+###
+GET  http://{{baseURL}}/target/config
+Content-Type: {{contentType}}
+
+###
+GET  http://{{baseURL}}/target/dialector
+Content-Type: {{contentType}}
+
+###
+GET  http://{{baseURL}}/target/status
+Content-Type: {{contentType}}
+
+###
+GET  http://{{baseURL}}/target/tables
+Content-Type: {{contentType}}
+
+###
+GET  http://{{baseURL}}/migration/status
+Content-Type: {{contentType}}

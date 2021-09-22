@@ -214,7 +214,7 @@ flycheck_*.el
 *.out
 
 # Dependency directories (remove the comment below to include it)
-# vendor/
+vendor/
 .gradle
 **/build/
 !src/**/build/
@@ -1331,7 +1331,8 @@ DerivedData/
 .LSOverride
 
 # Icon must end with two \r
-Icon
+Icon
+
 
 # Thumbnails
 ._*

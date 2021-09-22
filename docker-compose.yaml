@@ -1,0 +1,27 @@
+version: "3"
+
+services:
+  k8s-mig-validator:
+    image: k8s-mig/k8s-mig-validator:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - GIN_MODE=debug
+      - DB_SOURCE_HOST=k8s-mig-db-old
+      - DB_SOURCE_PORT=5432
+      - DB_SOURCE_NAME=msghub
+      - DB_SOURCE_USER=test001
+      - DB_SOURCE_PASSWORD=test001
+      - DB_TARGET_HOST=k8s-mig-db-new
+      - DB_TARGET_PORT=5432
+      - DB_TARGET_NAME=msghub
+      - DB_TARGET_USER=test001
+      - DB_TARGET_PASSWORD=test001
+    ports:
+      - "9995:3000"
+
+networks:
+  default:
+    external: true
+    name: msghub-backend
