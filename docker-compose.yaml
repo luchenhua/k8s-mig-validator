@@ -18,6 +18,10 @@ services:
       - DB_TARGET_NAME=msghub
       - DB_TARGET_USER=test001
       - DB_TARGET_PASSWORD=test001
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_DB=0
     ports:
       - "9995:3000"
 

@@ -1,8 +1,11 @@
 package repo
 
 import (
+	"context"
 	"strconv"
+	"time"
 
+	"github.com/go-redis/redis/v8"
 	"gorm.io/gorm"
 )
 
@@ -52,4 +55,20 @@ func GetMigrationStatus(sourceDB *gorm.DB, targetDB *gorm.DB) map[string]string 
 	}
 
 	return compareTables
+}
+
+func StartMigration(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx context.Context) (isStarted bool, startTime time.Time, err error) {
+	isStarted = false
+	startTime = time.Now().UTC()
+	nsec := startTime.UTC().Nanosecond()
+
+	err = rdb.Set(ctx, "StartTimeNano", nsec, 0).Err()
+	if err != nil {
+		return isStarted, startTime, err
+	}
+
+	// get the name of the tables & the number of the rows in each table
+	// store those information into the Redis for the use of progress tracking
+
+	return isStarted, startTime, err
 }

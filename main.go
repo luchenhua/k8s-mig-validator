@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"k8s-mig-validator/repo"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/spf13/viper"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -14,11 +16,15 @@ import (
 
 var dbSource *gorm.DB
 var dbTarget *gorm.DB
+var rdb *redis.Client
+var ctx = context.Background()
 
 func main() {
 	viper.AutomaticEnv()
 
 	prepareDBConnection()
+
+	prepareRedisConnection()
 
 	router := gin.Default()
 	baseURL := "/validator"
@@ -81,6 +87,17 @@ func main() {
 			c.SecureJSON(http.StatusOK, repo.GetMigrationStatus(dbSource, dbTarget))
 			return
 		})
+		migration.POST("/tasks", func(c *gin.Context) {
+			isStarted, startTime, err := repo.StartMigration(dbSource, dbTarget, rdb, ctx)
+
+			if err != nil || !isStarted {
+				c.SecureJSON(http.StatusServiceUnavailable, err.Error())
+				return
+			}
+
+			c.SecureJSON(http.StatusCreated, "Task started at "+startTime.String())
+			return
+		})
 	}
 
 	router.Run(":3000")
@@ -126,4 +143,12 @@ func prepareDBConnection() {
 	targetDB.SetMaxIdleConns(10)
 	targetDB.SetMaxOpenConns(100)
 	targetDB.SetConnMaxLifetime(time.Hour)
+}
+
+func prepareRedisConnection() {
+	rdb = redis.NewClient(&redis.Options{
+		Addr:     viper.GetString("REDIS_HOST") + ":" + viper.GetString("REDIS_PORT"),
+		Password: viper.GetString("REDIS_PASSWORD"),
+		DB:       viper.GetInt("REDIS_DB"),
+	})
 }
