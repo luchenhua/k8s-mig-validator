@@ -54,7 +54,13 @@ func main() {
 			return
 		})
 		source.GET("/tables", func(c *gin.Context) {
-			c.SecureJSON(http.StatusOK, repo.GetTables(dbSource))
+			result, err := repo.GetTables(dbSource)
+			if err != nil {
+				c.SecureJSON(http.StatusBadRequest, err.Error())
+				return
+			}
+
+			c.SecureJSON(http.StatusOK, result)
 			return
 		})
 	}
@@ -76,7 +82,13 @@ func main() {
 			return
 		})
 		target.GET("/tables", func(c *gin.Context) {
-			c.SecureJSON(http.StatusOK, repo.GetTables(dbTarget))
+			result, err := repo.GetTables(dbTarget)
+			if err != nil {
+				c.SecureJSON(http.StatusBadRequest, err.Error())
+				return
+			}
+
+			c.SecureJSON(http.StatusOK, result)
 			return
 		})
 	}
@@ -84,7 +96,13 @@ func main() {
 	migration := router.Group(baseURL + "/migration")
 	{
 		migration.GET("/status", func(c *gin.Context) {
-			c.SecureJSON(http.StatusOK, repo.GetMigrationStatus(dbSource, dbTarget))
+			result, err := repo.GetMigrationStatus(dbSource, dbTarget)
+			if err != nil {
+				c.SecureJSON(http.StatusBadRequest, err.Error())
+				return
+			}
+
+			c.SecureJSON(http.StatusOK, result)
 			return
 		})
 		migration.POST("/tasks", func(c *gin.Context) {

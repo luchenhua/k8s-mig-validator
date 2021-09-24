@@ -44,3 +44,7 @@ Content-Type: {{contentType}}
 ###
 GET  http://{{baseURL}}/migration/status
 Content-Type: {{contentType}}
+
+###
+POST  http://{{baseURL}}/migration/tasks
+Content-Type: {{contentType}}
