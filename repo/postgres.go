@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
 )
 
@@ -40,8 +41,8 @@ func GetMigrationStatus(sourceDB *gorm.DB, targetDB *gorm.DB) (map[string]string
 func StartMigration(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx context.Context) (bool, time.Time, error) {
 	// record the start time of the migration task
 	startTime := time.Now().UTC()
-	err := rdb.Set(ctx, "StartTimeNano", startTime.Nanosecond(), 0).Err()
-	if err != nil {
+	val, err := rdb.GetSet(ctx, "StartTimeNano", startTime.Nanosecond()).Result()
+	if err != nil || len(val) != 0 {
 		return false, startTime, err
 	}
 
@@ -52,12 +53,20 @@ func StartMigration(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx
 	}
 
 	// for each table, start a goroutine to do the migration
+	grp := new(errgroup.Group)
 	for k, v := range sourceTableInfo {
-		err = migrateData(sourceDB, targetDB, rdb, ctx, k, v)
-		if err != nil {
-			return false, startTime, err
-		}
+		tableName := k
+		totalRows := v
+		grp.Go(func() error {
+			return migrateData(sourceDB, targetDB, rdb, ctx, tableName, totalRows)
+		})
+		// if err := grp.Wait(); err != nil {
+		// 	fmt.Println(err.Error())
+		// 	return false, startTime, err
+		// }
 	}
+
+	rdb.GetSet(ctx, "StartTimeNano", nil)
 
 	return true, startTime, nil
 }
@@ -96,9 +105,14 @@ func migrateData(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx co
 	}
 	fmt.Println(tableName, "starting from", idx)
 
+	columnName, err := getColumnNameForSorting(sourceDB, tableName)
+	if err != nil {
+		return err
+	}
+
 	for idx < int(rowCount) {
 		// extract the same group of data from both DBs for comparison
-		sourceData, targetData, err := prepareDataForComparison(sourceDB, targetDB, tableName, idx, limit)
+		sourceData, targetData, err := prepareDataForComparison(sourceDB, targetDB, tableName, columnName, idx, limit)
 		if err != nil {
 			return err
 		}
@@ -111,7 +125,6 @@ func migrateData(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx co
 
 		// update the index and store it into the Redis as the new starting point
 		idx += limit
-		fmt.Println("new starting point", idx)
 		err = rdb.Set(ctx, tableName, idx, 0).Err()
 		if err != nil {
 			return err
@@ -150,15 +163,15 @@ func sqlRowsToMap(rows *sql.Rows) []map[string]interface{} {
 	return list
 }
 
-func prepareDataForComparison(source *gorm.DB, target *gorm.DB, table string, idx int, limit int) ([]map[string]interface{}, []map[string]interface{}, error) {
-	sourceRows, err := source.Table(table).Offset(idx).Limit(limit).Rows()
+func prepareDataForComparison(source *gorm.DB, target *gorm.DB, table string, column string, idx int, limit int) ([]map[string]interface{}, []map[string]interface{}, error) {
+	sourceRows, err := source.Table(table).Order(column + " ASC").Offset(idx).Limit(limit).Rows()
 	defer sourceRows.Close()
 	if err != nil {
 		return nil, nil, err
 	}
 	sourceData := sqlRowsToMap(sourceRows)
 
-	targetRows, err := target.Table(table).Offset(idx).Limit(limit).Rows()
+	targetRows, err := target.Table(table).Order(column + " ASC").Offset(idx).Limit(limit).Rows()
 	defer targetRows.Close()
 	if err != nil {
 		return nil, nil, err
@@ -175,8 +188,10 @@ func updateTargetDB(db *gorm.DB, tableName string, source []map[string]interface
 			bathInsertDatas = append(bathInsertDatas, v)
 			continue
 		}
-		if !reflect.DeepEqual(v, target[i]) {
-			err := db.Table(tableName).Where(target[i]).Updates(v).Error
+		t := target[i]
+		if !reflect.DeepEqual(v, t) {
+			fmt.Println(t)
+			err := db.Table(tableName).Where(t).Updates(v).Error
 			if err != nil {
 				return err
 			}
@@ -190,4 +205,19 @@ func updateTargetDB(db *gorm.DB, tableName string, source []map[string]interface
 	}
 
 	return nil
+}
+
+func getColumnNameForSorting(db *gorm.DB, table string) (string, error) {
+	rows, err := db.Table(table).Limit(1).Rows()
+	defer rows.Close()
+	if err != nil {
+		return "", err
+	}
+
+	name, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+
+	return name[0], nil
 }
