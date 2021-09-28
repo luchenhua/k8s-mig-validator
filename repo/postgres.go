@@ -38,11 +38,11 @@ func GetMigrationStatus(sourceDB *gorm.DB, targetDB *gorm.DB) (map[string]string
 	return compareTables, nil
 }
 
-func StartMigration(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx context.Context) (bool, time.Time, error) {
+func DataCopy(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx context.Context) (bool, time.Time, error) {
 	// record the start time of the migration task
 	startTime := time.Now().UTC()
-	val, err := rdb.GetSet(ctx, "StartTimeNano", startTime.Nanosecond()).Result()
-	if err != nil || len(val) != 0 {
+	_, err := rdb.GetSet(ctx, "DataCopyTimeNano", startTime.Nanosecond()).Result()
+	if err != redis.Nil && err != nil {
 		return false, startTime, err
 	}
 
@@ -58,17 +58,107 @@ func StartMigration(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx
 		tableName := k
 		totalRows := v
 		grp.Go(func() error {
-			return migrateData(sourceDB, targetDB, rdb, ctx, tableName, totalRows)
+			err := copyData(sourceDB, targetDB, rdb, ctx, tableName, totalRows)
+			return err
 		})
-		// if err := grp.Wait(); err != nil {
-		// 	fmt.Println(err.Error())
-		// 	return false, startTime, err
-		// }
+	}
+	if err := grp.Wait(); err != nil {
+		fmt.Println(err.Error())
+		return false, startTime, err
+	}
+
+	rdb.GetSet(ctx, "DataCopyTimeNano", nil)
+
+	return true, startTime, nil
+}
+
+func DataSync(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx context.Context) (bool, time.Time, error) {
+	// record the start time of the migration task
+	startTime := time.Now().UTC()
+	_, err := rdb.GetSet(ctx, "StartTimeNano", startTime.Nanosecond()).Result()
+	if err != redis.Nil && err != nil {
+		return false, startTime, err
+	}
+
+	// get the name of the tables & the number of the rows in each table
+	sourceTableInfo, err := getTableInfo(sourceDB)
+	if err != nil {
+		return false, startTime, err
+	}
+
+	// for each table, start a goroutine to do the migration
+	grp := new(errgroup.Group)
+	for k, v := range sourceTableInfo {
+		tableName := k
+		totalRows := v
+		grp.Go(func() error {
+			err := syncData(sourceDB, targetDB, rdb, ctx, tableName, totalRows)
+			return err
+		})
+	}
+	if err := grp.Wait(); err != nil {
+		fmt.Println(err.Error())
+		return false, startTime, err
 	}
 
 	rdb.GetSet(ctx, "StartTimeNano", nil)
 
 	return true, startTime, nil
+}
+
+func copyData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.Context, table string, total int64) error {
+	offset, err := rdb.Get(ctx, table).Int()
+	if err == redis.Nil {
+		err = rdb.Set(ctx, table, 0, 0).Err()
+		if err != nil {
+			return err
+		}
+		fmt.Println("data init starting point for", table)
+	} else if err != nil {
+		return err
+	} else {
+	}
+
+	for offset < int(total) {
+		fmt.Println(table, "starting from", offset)
+		data := make([]map[string]interface{}, 0)
+		// get data from the source database
+		err := source.Table(table).Order("id asc").Limit(limit).Offset(offset).Find(&data).Error
+		if err != nil {
+			return err
+		}
+
+		// write data into the target database
+		err = target.Table(table).Create(data).Error
+		if err != nil {
+			return err
+		}
+
+		// update the index and store it into the Redis as the new starting point
+		offset += limit
+		err = rdb.Set(ctx, table, offset, 0).Err()
+		if err != nil {
+			return err
+		}
+	}
+
+	err = rdb.Set(ctx, table, 0, 0).Err()
+	if err != nil {
+		return err
+	}
+	fmt.Println("all done & reset starting point")
+
+	return nil
+}
+
+func syncData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.Context, table string, total int64) error {
+	// get the id list for all the rows with difference
+	idList, err := getIdListForDiffData(source, target, rdb, ctx, table, total)
+	if err != nil {
+		return err
+	}
+
+	return updateDiffData(source, target, idList, table)
 }
 
 func getTableInfo(db *gorm.DB) (map[string]int64, error) {
@@ -86,58 +176,6 @@ func getTableInfo(db *gorm.DB) (map[string]int64, error) {
 	}
 
 	return tableInfo, nil
-}
-
-func migrateData(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx context.Context, tableName string, rowCount int64) error {
-	// get the offset from the Redis for the starting point
-	// if not exist, store the initial index into the Redis as the starting point
-	idx, err := rdb.Get(ctx, tableName).Int()
-	if err == redis.Nil {
-		fmt.Println("creating starting point for", tableName)
-
-		err = rdb.Set(ctx, tableName, 0, 0).Err()
-		if err != nil {
-			return err
-		}
-	} else if err != nil {
-		return err
-	} else {
-	}
-	fmt.Println(tableName, "starting from", idx)
-
-	columnName, err := getColumnNameForSorting(sourceDB, tableName)
-	if err != nil {
-		return err
-	}
-
-	for idx < int(rowCount) {
-		// extract the same group of data from both DBs for comparison
-		sourceData, targetData, err := prepareDataForComparison(sourceDB, targetDB, tableName, columnName, idx, limit)
-		if err != nil {
-			return err
-		}
-
-		// compare the data and update the target DB if necessary
-		err = updateTargetDB(targetDB, tableName, sourceData, targetData)
-		if err != nil {
-			return err
-		}
-
-		// update the index and store it into the Redis as the new starting point
-		idx += limit
-		err = rdb.Set(ctx, tableName, idx, 0).Err()
-		if err != nil {
-			return err
-		}
-	}
-
-	fmt.Println("all done & reset starting point")
-	err = rdb.Set(ctx, tableName, 0, 0).Err()
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func sqlRowsToMap(rows *sql.Rows) []map[string]interface{} {
@@ -163,61 +201,80 @@ func sqlRowsToMap(rows *sql.Rows) []map[string]interface{} {
 	return list
 }
 
-func prepareDataForComparison(source *gorm.DB, target *gorm.DB, table string, column string, idx int, limit int) ([]map[string]interface{}, []map[string]interface{}, error) {
-	sourceRows, err := source.Table(table).Order(column + " ASC").Offset(idx).Limit(limit).Rows()
-	defer sourceRows.Close()
-	if err != nil {
-		return nil, nil, err
+func getIdListForDiffData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.Context, table string, total int64) ([]int, error) {
+	offset, err := rdb.Get(ctx, table).Int()
+	if err == redis.Nil {
+		err = rdb.Set(ctx, table, 0, 0).Err()
+		if err != nil {
+			return nil, err
+		}
+		fmt.Println("data sync starting point for", table)
+	} else if err != nil {
+		return nil, err
+	} else {
 	}
-	sourceData := sqlRowsToMap(sourceRows)
 
-	targetRows, err := target.Table(table).Order(column + " ASC").Offset(idx).Limit(limit).Rows()
-	defer targetRows.Close()
-	if err != nil {
-		return nil, nil, err
+	idList := make([]int, 0)
+	for offset < int(total) {
+		fmt.Println(table, "starting from", offset)
+
+		sourceList := make([]map[string]interface{}, 0)
+		err := source.Table(table).Select("id", "md5(textin(record_out("+table+")))").Order("id asc").Limit(limit).Offset(offset).Find(&sourceList).Error
+		if err != nil {
+			return nil, err
+		}
+
+		targetList := make([]map[string]interface{}, 0)
+		err = target.Table(table).Select("id", "md5(textin(record_out("+table+")))").Order("id asc").Limit(limit).Offset(offset).Find(&targetList).Error
+		if err != nil {
+			return nil, err
+		}
+
+		// compare the md5 and store the id for the row with difference
+		for k, v := range sourceList {
+			if !reflect.DeepEqual(v, targetList[k]) {
+				idList = append(idList, int(v["id"].(int32)))
+			}
+		}
+
+		// update the index and store it into the Redis as the new starting point
+		offset += limit
+		err = rdb.Set(ctx, table, offset, 0).Err()
+		if err != nil {
+			return nil, err
+		}
 	}
-	targetData := sqlRowsToMap(targetRows)
+	fmt.Println(table, ":", len(idList), "rows need to be update")
 
-	return sourceData, targetData, nil
+	err = rdb.Set(ctx, table, 0, 0).Err()
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println("all done & reset starting point")
+
+	return idList, nil
 }
 
-func updateTargetDB(db *gorm.DB, tableName string, source []map[string]interface{}, target []map[string]interface{}) error {
-	var bathInsertDatas []map[string]interface{}
-	for i, v := range source {
-		if i >= len(target) {
-			bathInsertDatas = append(bathInsertDatas, v)
-			continue
+func updateDiffData(source *gorm.DB, target *gorm.DB, ids []int, table string) error {
+	for len(ids) > 0 {
+		// get data from the source db
+		dataList := make([]map[string]interface{}, 0)
+		err := source.Table(table).Where("id IN ?", ids[:limit]).Find(&dataList).Error
+		if err != nil {
+			return err
 		}
-		t := target[i]
-		if !reflect.DeepEqual(v, t) {
-			fmt.Println(t)
-			err := db.Table(tableName).Where(t).Updates(v).Error
+
+		// loop through and update the target db row by row
+		for _, v := range dataList {
+			fmt.Println(v)
+			err = target.Table(table).Where("id = ?", v["id"]).Updates(&v).Error
 			if err != nil {
 				return err
 			}
-			continue
 		}
-	}
 
-	err := db.Table(tableName).CreateInBatches(bathInsertDatas, len(bathInsertDatas)).Error
-	if err != nil {
-		return err
+		ids = ids[limit:]
 	}
 
 	return nil
-}
-
-func getColumnNameForSorting(db *gorm.DB, table string) (string, error) {
-	rows, err := db.Table(table).Limit(1).Rows()
-	defer rows.Close()
-	if err != nil {
-		return "", err
-	}
-
-	name, err := rows.Columns()
-	if err != nil {
-		return "", err
-	}
-
-	return name[0], nil
 }

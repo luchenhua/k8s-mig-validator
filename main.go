@@ -105,15 +105,26 @@ func main() {
 			c.SecureJSON(http.StatusOK, result)
 			return
 		})
-		migration.POST("/tasks", func(c *gin.Context) {
-			isStarted, startTime, err := repo.StartMigration(dbSource, dbTarget, rdb, ctx)
+		migration.POST("/init", func(c *gin.Context) {
+			isStarted, startTime, err := repo.DataCopy(dbSource, dbTarget, rdb, ctx)
 
 			if err != nil || !isStarted {
 				c.SecureJSON(http.StatusServiceUnavailable, err.Error())
 				return
 			}
 
-			c.SecureJSON(http.StatusCreated, "Task started at "+startTime.String())
+			c.SecureJSON(http.StatusCreated, "DataCopy started at "+startTime.String())
+			return
+		})
+		migration.POST("/sync", func(c *gin.Context) {
+			isStarted, startTime, err := repo.DataSync(dbSource, dbTarget, rdb, ctx)
+
+			if err != nil || !isStarted {
+				c.SecureJSON(http.StatusServiceUnavailable, err.Error())
+				return
+			}
+
+			c.SecureJSON(http.StatusCreated, "DataSync started at "+startTime.String())
 			return
 		})
 	}

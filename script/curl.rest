@@ -46,5 +46,9 @@ GET  http://{{baseURL}}/migration/status
 Content-Type: {{contentType}}
 
 ###
-POST  http://{{baseURL}}/migration/tasks
+POST  http://{{baseURL}}/migration/init
+Content-Type: {{contentType}}
+
+###
+POST  http://{{baseURL}}/migration/sync
 Content-Type: {{contentType}}
