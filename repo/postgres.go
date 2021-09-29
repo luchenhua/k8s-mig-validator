@@ -126,7 +126,7 @@ func copyData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.C
 		data := make([]map[string]interface{}, 0)
 		// get data from the source database
 		subQuery := source.Table(table).Select("id").Order("id asc").Limit(1).Offset(offset)
-		err := source.Table(table).Where("id >= (?)", subQuery).Order("id asc").Limit(batchSizeCreate).Offset(offset).Find(&data).Error
+		err := source.Table(table).Where("id >= (?)", subQuery).Order("id asc").Limit(batchSizeCreate).Find(&data).Error
 		if err != nil {
 			return err
 		}
