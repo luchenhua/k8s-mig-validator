@@ -22,15 +22,18 @@ services:
       - REDIS_PORT=6379
       - REDIS_PASSWORD=
       - REDIS_DB=0
+      - BATCH_SIZE_CREATE=1000
+      - BATCH_SIZE_SEARCH=10000
+      - BATCH_SIZE_UPDATE=1000
     ports:
       - "9995:3000"
     deploy:
       resources:
         limits:
-          cpus: "0.5"
+          cpus: "1"
           memory: 2048M
         reservations:
-          cpus: "0.5"
+          cpus: "1"
           memory: 2048M
 
 networks:

@@ -13,7 +13,9 @@ import (
 	"gorm.io/gorm"
 )
 
-var limit int = 100
+var batchSizeCreate int = 1000
+var batchSizeUpdate int = 100
+var batchSizeSearch int = 10000
 
 func GetTables(db *gorm.DB) (map[string]int64, error) {
 	return getTableInfo(db)
@@ -123,7 +125,8 @@ func copyData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.C
 		fmt.Println(table, "starting from", offset)
 		data := make([]map[string]interface{}, 0)
 		// get data from the source database
-		err := source.Table(table).Order("id asc").Limit(limit).Offset(offset).Find(&data).Error
+		subQuery := source.Table(table).Select("id").Order("id asc").Limit(1).Offset(offset)
+		err := source.Table(table).Where("id >= (?)", subQuery).Order("id asc").Limit(batchSizeCreate).Offset(offset).Find(&data).Error
 		if err != nil {
 			return err
 		}
@@ -135,7 +138,7 @@ func copyData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.C
 		}
 
 		// update the index and store it into the Redis as the new starting point
-		offset += limit
+		offset += batchSizeCreate
 		err = rdb.Set(ctx, table, offset, 0).Err()
 		if err != nil {
 			return err
@@ -219,13 +222,13 @@ func getIdListForDiffData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, c
 		fmt.Println(table, "starting from", offset)
 
 		sourceList := make([]map[string]interface{}, 0)
-		err := source.Table(table).Select("id", "md5(textin(record_out("+table+")))").Order("id asc").Limit(limit).Offset(offset).Find(&sourceList).Error
+		err := source.Table(table).Select("id", "md5(textin(record_out("+table+")))").Order("id asc").Limit(batchSizeSearch).Offset(offset).Find(&sourceList).Error
 		if err != nil {
 			return nil, err
 		}
 
 		targetList := make([]map[string]interface{}, 0)
-		err = target.Table(table).Select("id", "md5(textin(record_out("+table+")))").Order("id asc").Limit(limit).Offset(offset).Find(&targetList).Error
+		err = target.Table(table).Select("id", "md5(textin(record_out("+table+")))").Order("id asc").Limit(batchSizeSearch).Offset(offset).Find(&targetList).Error
 		if err != nil {
 			return nil, err
 		}
@@ -238,7 +241,7 @@ func getIdListForDiffData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, c
 		}
 
 		// update the index and store it into the Redis as the new starting point
-		offset += limit
+		offset += batchSizeSearch
 		err = rdb.Set(ctx, table, offset, 0).Err()
 		if err != nil {
 			return nil, err
@@ -259,21 +262,32 @@ func updateDiffData(source *gorm.DB, target *gorm.DB, ids []int, table string) e
 	for len(ids) > 0 {
 		// get data from the source db
 		dataList := make([]map[string]interface{}, 0)
-		err := source.Table(table).Where("id IN ?", ids[:limit]).Find(&dataList).Error
-		if err != nil {
-			return err
-		}
-
-		// loop through and update the target db row by row
-		for _, v := range dataList {
-			fmt.Println(v)
-			err = target.Table(table).Where("id = ?", v["id"]).Updates(&v).Error
+		if batchSizeUpdate > len(ids) {
+			err := source.Table(table).Where("id IN ?", ids).Find(&dataList).Error
+			if err != nil {
+				return err
+			}
+		} else {
+			err := source.Table(table).Where("id IN ?", ids[:batchSizeUpdate]).Find(&dataList).Error
 			if err != nil {
 				return err
 			}
 		}
 
-		ids = ids[limit:]
+		// loop through and update the target db row by row
+		grp := new(errgroup.Group)
+		for _, v := range dataList {
+			data := v
+			grp.Go(func() error {
+				err := target.Table(table).Where("id = ?", data["id"]).Updates(&data).Error
+				return err
+			})
+		}
+		if err := grp.Wait(); err != nil {
+			return err
+		}
+
+		ids = ids[batchSizeUpdate:]
 	}
 
 	return nil
