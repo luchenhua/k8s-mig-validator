@@ -24,6 +24,14 @@ services:
       - REDIS_DB=0
     ports:
       - "9995:3000"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 2048M
+        reservations:
+          cpus: "0.5"
+          memory: 2048M
 
 networks:
   default:
