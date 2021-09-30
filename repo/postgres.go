@@ -125,8 +125,11 @@ func copyData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.C
 		fmt.Println(table, "starting from", offset)
 		data := make([]map[string]interface{}, 0)
 		// get data from the source database
-		subQuery := source.Table(table).Select("id").Order("id asc").Limit(1).Offset(offset)
-		err := source.Table(table).Where("id >= (?)", subQuery).Order("id asc").Limit(batchSizeCreate).Find(&data).Error
+		err := source.Table(table).
+			Where("id >= (?)", source.Table(table).Select("id").Order("id asc").Limit(1).Offset(offset)).
+			Order("id asc").
+			Limit(batchSizeCreate).
+			Find(&data).Error
 		if err != nil {
 			return err
 		}
@@ -222,13 +225,23 @@ func getIdListForDiffData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, c
 		fmt.Println(table, "starting from", offset)
 
 		sourceList := make([]map[string]interface{}, 0)
-		err := source.Table(table).Select("id", "md5(textin(record_out("+table+")))").Order("id asc").Limit(batchSizeSearch).Offset(offset).Find(&sourceList).Error
+		err := source.Table(table).
+			Select("id", "md5(textin(record_out("+table+")))").
+			Where("id >= (?)", source.Table(table).Select("id").Order("id asc").Limit(1).Offset(offset)).
+			Order("id asc").
+			Limit(batchSizeSearch).
+			Find(&sourceList).Error
 		if err != nil {
 			return nil, err
 		}
 
 		targetList := make([]map[string]interface{}, 0)
-		err = target.Table(table).Select("id", "md5(textin(record_out("+table+")))").Order("id asc").Limit(batchSizeSearch).Offset(offset).Find(&targetList).Error
+		err = target.Table(table).
+			Select("id", "md5(textin(record_out("+table+")))").
+			Where("id >= (?)", target.Table(table).Select("id").Order("id asc").Limit(1).Offset(offset)).
+			Order("id asc").
+			Limit(batchSizeSearch).
+			Find(&targetList).Error
 		if err != nil {
 			return nil, err
 		}
