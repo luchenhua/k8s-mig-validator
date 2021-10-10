@@ -168,17 +168,18 @@ func syncData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.C
 }
 
 func getTableInfo(db *gorm.DB) (map[string]int64, error) {
-	var tables []string
-	err := db.Table("information_schema.tables").Where("table_schema = ?", "public").Pluck("table_name", &tables).Error
+	res := make([]struct {
+		Name  string
+		Count int64
+	}, 0)
+	err := db.Table("pg_stat_user_tables").Select("relname AS name", "(n_tup_ins - n_tup_del) AS count").Find(&res).Error
 	if err != nil {
 		return nil, err
 	}
 
 	tableInfo := make(map[string]int64)
-	var count int64
-	for _, table := range tables {
-		db.Table(table).Count(&count)
-		tableInfo[table] = count
+	for _, r := range res {
+		tableInfo[r.Name] = r.Count
 	}
 
 	return tableInfo, nil
