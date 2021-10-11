@@ -172,6 +172,7 @@ func getTableInfo(db *gorm.DB) (map[string]int64, error) {
 		Name  string
 		Count int64
 	}, 0)
+	// select relname as name, reltuples as count from pg_catalog.pg_class where relnamespace = (select oid from pg_catalog.pg_namespace where relkind = 'r' and nspname = 'messagehub');
 	err := db.Table("pg_stat_user_tables").Select("relname AS name", "(n_tup_ins - n_tup_del) AS count").Find(&res).Error
 	if err != nil {
 		return nil, err
