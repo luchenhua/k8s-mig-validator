@@ -17,17 +17,17 @@ var batchSizeCreate int = 1000
 var batchSizeUpdate int = 100
 var batchSizeSearch int = 10000
 
-func GetTables(db *gorm.DB) (map[string]int64, error) {
-	return getTableInfo(db)
+func GetTables(db *gorm.DB, rdb *redis.Client, ctx context.Context) (map[string]int64, error) {
+	return getTableInfo(db, rdb, ctx)
 }
 
-func GetMigrationStatus(sourceDB *gorm.DB, targetDB *gorm.DB) (map[string]string, error) {
-	sourceTableInfo, err := getTableInfo(sourceDB)
+func GetMigrationStatus(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx context.Context) (map[string]string, error) {
+	sourceTableInfo, err := getTableInfo(sourceDB, rdb, ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	targetTableInfo, err := getTableInfo(targetDB)
+	targetTableInfo, err := getTableInfo(targetDB, rdb, ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func DataCopy(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx conte
 	}
 
 	// get the name of the tables & the number of the rows in each table
-	sourceTableInfo, err := getTableInfo(sourceDB)
+	sourceTableInfo, err := getTableInfo(sourceDB, rdb, ctx)
 	if err != nil {
 		return false, startTime, err
 	}
@@ -83,7 +83,7 @@ func DataSync(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx conte
 	}
 
 	// get the name of the tables & the number of the rows in each table
-	sourceTableInfo, err := getTableInfo(sourceDB)
+	sourceTableInfo, err := getTableInfo(sourceDB, rdb, ctx)
 	if err != nil {
 		return false, startTime, err
 	}
@@ -109,49 +109,67 @@ func DataSync(sourceDB *gorm.DB, targetDB *gorm.DB, rdb *redis.Client, ctx conte
 }
 
 func copyData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.Context, table string, total int64) error {
-	offset, err := rdb.Get(ctx, table).Int()
-	if err == redis.Nil {
-		err = rdb.Set(ctx, table, 0, 0).Err()
+	// offset, err := rdb.Get(ctx, table).Int()
+	// if err == redis.Nil {
+	// 	err = rdb.Set(ctx, table, 0, 0).Err()
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// 	fmt.Println("data init starting point for", table)
+	// } else if err != nil {
+	// 	return err
+	// } else {
+	// }
+
+	// for offset < int(total) {
+	// 	fmt.Println(table, "starting from", offset)
+	// 	data := make([]map[string]interface{}, 0)
+	// 	// get data from the source database
+	// 	err := source.Table(table).
+	// 		Where("id >= (?)", source.Table(table).Select("id").Order("id asc").Limit(1).Offset(offset)).
+	// 		Order("id asc").
+	// 		Limit(batchSizeCreate).
+	// 		Find(&data).Error
+	// 	if err != nil {
+	// 		return err
+	// 	}
+
+	// 	// write data into the target database
+	// 	err = target.Table(table).Create(data).Error
+	// 	if err != nil {
+	// 		return err
+	// 	}
+
+	// 	// update the index and store it into the Redis as the new starting point
+	// 	offset += batchSizeCreate
+	// 	err = rdb.Set(ctx, table, offset, 0).Err()
+	// 	if err != nil {
+	// 		return err
+	// 	}
+	// }
+
+	// err = rdb.Set(ctx, table, 0, 0).Err()
+	// if err != nil {
+	// 	return err
+	// }
+
+	// select column_name from key_column_usage where table_schema = 'messagehub' and table_name = 'tbl_user' and constraint_name = (select constraint_name from table_constraints where table_schema = 'messagehub' and table_name = 'tbl_user' and constraint_type = 'PRIMARY KEY');
+	results := make([]map[string]interface{}, 0)
+	result := source.Table(table).FindInBatches(&results, batchSizeCreate, func(tx *gorm.DB, batch int) error {
+		err := target.Table(table).Create(results).Error
 		if err != nil {
 			return err
 		}
-		fmt.Println("data init starting point for", table)
-	} else if err != nil {
-		return err
-	} else {
+
+		fmt.Println(tx.RowsAffected)
+		fmt.Println(batch)
+
+		return nil
+	})
+	if result.Error != nil {
+		return result.Error
 	}
 
-	for offset < int(total) {
-		fmt.Println(table, "starting from", offset)
-		data := make([]map[string]interface{}, 0)
-		// get data from the source database
-		err := source.Table(table).
-			Where("id >= (?)", source.Table(table).Select("id").Order("id asc").Limit(1).Offset(offset)).
-			Order("id asc").
-			Limit(batchSizeCreate).
-			Find(&data).Error
-		if err != nil {
-			return err
-		}
-
-		// write data into the target database
-		err = target.Table(table).Create(data).Error
-		if err != nil {
-			return err
-		}
-
-		// update the index and store it into the Redis as the new starting point
-		offset += batchSizeCreate
-		err = rdb.Set(ctx, table, offset, 0).Err()
-		if err != nil {
-			return err
-		}
-	}
-
-	err = rdb.Set(ctx, table, 0, 0).Err()
-	if err != nil {
-		return err
-	}
 	fmt.Println("all done & reset starting point")
 
 	return nil
@@ -167,13 +185,38 @@ func syncData(source *gorm.DB, target *gorm.DB, rdb *redis.Client, ctx context.C
 	return updateDiffData(source, target, idList, table)
 }
 
-func getTableInfo(db *gorm.DB) (map[string]int64, error) {
+func getTableInfo(db *gorm.DB, rdb *redis.Client, ctx context.Context) (map[string]int64, error) {
+	var names []string
+	err := db.Table("information_schema.tables").Select("table_name").Where("table_type = ? AND table_schema = ?", "BASE TABLE", "messagehub").Find(&names).Error
+	if err != nil {
+		return nil, err
+	}
+	tableInfo := make(map[string]int64)
+	for _, name := range names {
+		var count int64
+		db.Table(name).Count(&count)
+		tableInfo[name] = count
+	}
+
+	return tableInfo, nil
+}
+
+func getTableGeneralInfo(db *gorm.DB) (map[string]int64, error) {
 	res := make([]struct {
 		Name  string
 		Count int64
 	}, 0)
-	// select relname as name, reltuples as count from pg_catalog.pg_class where relnamespace = (select oid from pg_catalog.pg_namespace where relkind = 'r' and nspname = 'messagehub');
-	err := db.Table("pg_stat_user_tables").Select("relname AS name", "(n_tup_ins - n_tup_del) AS count").Find(&res).Error
+	err :=
+		db.Table("pg_catalog.pg_class").
+			Select(
+				"relname AS name",
+				"reltuples AS count").
+			Where(
+				"relnamespace = (?)",
+				db.Table("pg_catalog.pg_namespace").
+					Select("oid").
+					Where("relkind = ? AND nspname = ?", "r", "messagehub")).
+			Find(&res).Error
 	if err != nil {
 		return nil, err
 	}

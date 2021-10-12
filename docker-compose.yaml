@@ -10,12 +10,12 @@ services:
       - GIN_MODE=debug
       - DB_SOURCE_HOST=k8s-mig-db-old
       - DB_SOURCE_PORT=5432
-      - DB_SOURCE_NAME=msghub
+      - DB_SOURCE_NAME=messagehub
       - DB_SOURCE_USER=test001
       - DB_SOURCE_PASSWORD=test001
       - DB_TARGET_HOST=k8s-mig-db-new
       - DB_TARGET_PORT=5432
-      - DB_TARGET_NAME=msghub
+      - DB_TARGET_NAME=messagehub
       - DB_TARGET_USER=test001
       - DB_TARGET_PASSWORD=test001
       - REDIS_HOST=redis
